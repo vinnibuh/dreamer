@@ -4,3 +4,6 @@ __pycache__/
 ./dist
 ./logdir
 MUJOCO_LOG.TXT
+.idea
+.venv
+logdir

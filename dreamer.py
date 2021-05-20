@@ -8,7 +8,7 @@ import sys
 import time
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['MUJOCO_GL'] = 'egl'
+os.environ['MUJOCO_GL'] = 'glfw'
 
 import numpy as np
 import tensorflow as tf
@@ -152,7 +152,7 @@ class Dreamer(tools.Module):
 
   @tf.function()
   def train(self, data, log_images=False):
-    self._strategy.experimental_run_v2(self._train, args=(data, log_images))
+    self._strategy.run(self._train, args=(data, log_images))
 
   def _train(self, data, log_images):
     with tf.GradientTape() as model_tape:
