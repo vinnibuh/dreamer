@@ -13,14 +13,11 @@ os.environ['MUJOCO_GL'] = 'glfw'
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.mixed_precision import experimental as prec
+from tensorflow_probability import distributions as tfd
 
 tf.get_logger().setLevel('ERROR')
 
-from tensorflow_probability import distributions as tfd
-
-sys.path.append(str(pathlib.Path(__file__).parent))
-
-import models
+import tf_dyne.models as models
 import tools
 import wrappers
 
@@ -38,7 +35,7 @@ def define_config():
     config.gpu_growth = True
     config.precision = 16
     # Environment.
-    config.task = 'dmc_walker_walk'
+    config.task = 'dmc_hopper_hop'
     config.envs = 1
     config.parallel = 'none'
     config.action_repeat = 2
@@ -60,7 +57,9 @@ def define_config():
     config.weight_decay = 0.0
     config.weight_decay_pattern = r'.*'
     # Training.
-    config.batch_size = 50
+    config.epoch_size = 10000
+    config.epochs = 200
+    config.batch_size = 128
     config.batch_length = 50
     config.train_every = 1000
     config.train_steps = 100
@@ -83,7 +82,7 @@ def define_config():
     return config
 
 
-class Dreamer(tools.Module):
+class Dyne(tools.Module):
 
     def __init__(self, config, datadir, actspace, writer):
         self._c = config
@@ -113,16 +112,15 @@ class Dreamer(tools.Module):
         if state is not None and reset.any():
             mask = tf.cast(1 - reset, self._float)[:, None]
             state = tf.nest.map_structure(lambda x: x * mask, state)
-        if self._should_train(step):
-            log = self._should_log(step)
-            n = self._c.pretrain if self._should_pretrain() else self._c.train_steps
-            print(f'Training for {n} steps.')
-            with self._strategy.scope():
-                for train_step in range(n):
-                    log_images = self._c.log_images and log and train_step == 0
-                    self.train(next(self._dataset), log_images)
-            if log:
-                self._write_summaries()
+        log = self._should_log(step)
+        n = self._c.train_steps
+        print(f'Training for {n} steps.')
+        with self._strategy.scope():
+            for train_step in range(n):
+                log_images = self._c.log_images and log and train_step == 0
+                self.train(next(self._dataset), log_images)
+        if log:
+            self._write_summaries()
         action, state = self.policy(obs, state, training)
         if training:
             self._step.assign_add(len(reset) * self._c.action_repeat)
@@ -212,12 +210,7 @@ class Dreamer(tools.Module):
                 self._image_summaries(data, embed, image_pred)
 
     def _build_model(self):
-        acts = dict(
-            elu=tf.nn.elu, relu=tf.nn.relu, swish=tf.nn.swish,
-            leaky_relu=tf.nn.leaky_relu)
-        cnn_act = acts[self._c.cnn_act]
-        act = acts[self._c.dense_act]
-        self._encode = models.ConvEncoder(self._c.cnn_depth, cnn_act)
+        self._encode = models.DenseActionEncoder(self._c.cnn_depth, cnn_act)
         self._dynamics = models.RSSM(
             self._c.stoch_size, self._c.deter_size, self._c.deter_size)
         self._decode = models.ConvDecoder(self._c.cnn_depth, cnn_act)
@@ -373,25 +366,18 @@ def summarize_episode(episode, config, datadir, writer, prefix):
             tools.video_summary(f'sim/{prefix}/video', episode['image'][None])
 
 
-def make_env(config, writer, prefix, datadir, store):
+def make_env(config, datadir, store):
     suite, task = config.task.split('_', 1)
     if suite == 'dmc':
         env = wrappers.DeepMindControl(task)
         env = wrappers.ActionRepeat(env, config.action_repeat)
         env = wrappers.NormalizeActions(env)
-    elif suite == 'atari':
-        env = wrappers.Atari(
-            task, config.action_repeat, (64, 64), grayscale=False,
-            life_done=True, sticky_actions=True)
-        env = wrappers.OneHotAction(env)
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit / config.action_repeat)
     callbacks = []
     if store:
         callbacks.append(lambda ep: tools.save_episodes(datadir, [ep]))
-    callbacks.append(
-        lambda ep: summarize_episode(ep, config, datadir, writer, prefix))
     env = wrappers.Collect(env, callbacks, config.precision)
     env = wrappers.RewardObs(env)
     return env
@@ -414,11 +400,8 @@ def main(config):
         str(config.logdir), max_queue=1000, flush_millis=20000)
     writer.set_as_default()
     train_envs = [wrappers.Async(lambda: make_env(
-        config, writer, 'train', datadir, store=True), config.parallel)
+        config, datadir, store=True), config.parallel)
                   for _ in range(config.envs)]
-    test_envs = [wrappers.Async(lambda: make_env(
-        config, writer, 'test', datadir, store=False), config.parallel)
-                 for _ in range(config.envs)]
     actspace = train_envs[0].action_space
 
     # Prefill dataset with random episodes.
@@ -432,22 +415,19 @@ def main(config):
     # Train and regularly evaluate the agent.
     step = count_steps(datadir, config)
     print(f'Simulating agent for {config.steps - step} steps.')
-    agent = Dreamer(config, datadir, actspace, writer)
+    agent = Dyne(config, datadir, actspace, writer)
     if (config.logdir / 'variables.pkl').exists():
         print('Load checkpoint.')
         agent.load(config.logdir / 'variables.pkl')
-    state = None
     while step < config.steps:
         print('Start evaluation.')
         tools.simulate(
-            functools.partial(agent, training=False), test_envs, episodes=1)
+            functools.partial(agent, training=False), train_envs, episodes=1)
         writer.flush()
         print('Start collection.')
-        steps = config.eval_every // config.action_repeat
-        state = tools.simulate(agent, train_envs, steps, state=state)
         step = count_steps(datadir, config)
         agent.save(config.logdir / 'variables.pkl')
-    for env in train_envs + test_envs:
+    for env in train_envs:
         env.close()
 
 
