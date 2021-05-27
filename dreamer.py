@@ -94,7 +94,7 @@ class Dreamer(tools.Module):
         with tf.device('cpu:0'):
             self._step = tf.Variable(count_steps(datadir, config), dtype=tf.int64)
         self._should_pretrain = tools.Once()
-        self._should_train = tools.Every(config.train_every)
+        self._should_train = lambda x: False
         self._should_log = tools.Every(config.log_every)
         self._last_log = None
         self._last_time = time.time()
@@ -113,7 +113,7 @@ class Dreamer(tools.Module):
         if state is not None and reset.any():
             mask = tf.cast(1 - reset, self._float)[:, None]
             state = tf.nest.map_structure(lambda x: x * mask, state)
-        if self._should_train(step):
+        if self._should_train(step) or self._should_pretrain():
             log = self._should_log(step)
             n = self._c.pretrain if self._should_pretrain() else self._c.train_steps
             print(f'Training for {n} steps.')
@@ -149,6 +149,14 @@ class Dreamer(tools.Module):
     def load(self, filename):
         super().load(filename)
         self._should_pretrain()
+
+    def load_from_variables(self, directory):
+        self._encode.load(directory / 'encoder')
+        self._decode.load(directory / 'decoder')
+        self._dynamics.load(directory / 'dynamics')
+        self._reward.load(directory / 'reward')
+        self._actor.load(directory / 'policy')
+        self._value.load(directory / 'value')
 
     @tf.function()
     def train(self, data, log_images=False):
