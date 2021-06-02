@@ -8,7 +8,7 @@ import sys
 import time
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['MUJOCO_GL'] = 'glfw'
+os.environ['MUJOCO_GL'] = 'egl'
 
 import numpy as np
 import tensorflow as tf
@@ -23,6 +23,7 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 import models
 import tools
 import wrappers
+import wandb
 
 
 def define_config():
@@ -36,7 +37,7 @@ def define_config():
     config.log_scalars = True
     config.log_images = True
     config.gpu_growth = True
-    config.precision = 16
+    config.precision = 32
     # Environment.
     config.task = 'dmc_walker_walk'
     config.envs = 1
@@ -60,7 +61,7 @@ def define_config():
     config.weight_decay = 0.0
     config.weight_decay_pattern = r'.*'
     # Training.
-    config.batch_size = 50
+    config.batch_size = 51
     config.batch_length = 50
     config.train_every = 1000
     config.train_steps = 100
@@ -77,9 +78,9 @@ def define_config():
     config.action_dist = 'tanh_normal'
     config.action_init_std = 5.0
     config.expl = 'additive_gaussian'
-    config.expl_amount = 0.3
-    config.expl_decay = 0.0
-    config.expl_min = 0.0
+    config.expl_amount = 0.4
+    config.expl_decay = 200000
+    config.expl_min = 0.1
     return config
 
 
@@ -94,7 +95,7 @@ class Dreamer(tools.Module):
         with tf.device('cpu:0'):
             self._step = tf.Variable(count_steps(datadir, config), dtype=tf.int64)
         self._should_pretrain = tools.Once()
-        self._should_train = lambda x: False
+        self._should_train = tools.Every(config.train_every)
         self._should_log = tools.Every(config.log_every)
         self._last_log = None
         self._last_time = time.time()
@@ -113,7 +114,7 @@ class Dreamer(tools.Module):
         if state is not None and reset.any():
             mask = tf.cast(1 - reset, self._float)[:, None]
             state = tf.nest.map_structure(lambda x: x * mask, state)
-        if self._should_train(step) or self._should_pretrain():
+        if self._should_train(step):
             log = self._should_log(step)
             n = self._c.pretrain if self._should_pretrain() else self._c.train_steps
             print(f'Training for {n} steps.')
@@ -157,6 +158,7 @@ class Dreamer(tools.Module):
         self._reward.load(directory / 'reward')
         self._actor.load(directory / 'policy')
         self._value.load(directory / 'value')
+        self._should_pretrain()
 
     @tf.function()
     def train(self, data, log_images=False):
@@ -331,6 +333,8 @@ class Dreamer(tools.Module):
             f.write(json.dumps({'step': step, **dict(metrics)}) + '\n')
         [tf.summary.scalar('agent/' + k, m) for k, m in metrics]
         print(f'[{step}]', ' / '.join(f'{k} {v:.1f}' for k, v in metrics))
+        for k, v in metrics:
+            wandb.log({k: v})
         self._writer.flush()
 
 
@@ -371,6 +375,8 @@ def summarize_episode(episode, config, datadir, writer, prefix):
         (f'{prefix}/return', float(episode['reward'].sum())),
         (f'{prefix}/length', len(episode['reward']) - 1),
         (f'episodes', episodes)]
+    for k, v in metrics:
+        wandb.log({k: v})
     step = count_steps(datadir, config)
     with (config.logdir / 'metrics.jsonl').open('a') as f:
         f.write(json.dumps(dict([('step', step)] + metrics)) + '\n')
@@ -429,6 +435,10 @@ def main(config):
                  for _ in range(config.envs)]
     actspace = train_envs[0].action_space
 
+    # Init wandb
+    wandb.init(project='dreamer-training', entity='vinnibuh')
+    wandb.config = config
+
     # Prefill dataset with random episodes.
     step = count_steps(datadir, config)
     prefill = max(0, config.prefill - step)
@@ -441,9 +451,10 @@ def main(config):
     step = count_steps(datadir, config)
     print(f'Simulating agent for {config.steps - step} steps.')
     agent = Dreamer(config, datadir, actspace, writer)
-    if (config.logdir / 'variables.pkl').exists():
+    expected_checkpoint_path = pathlib.Path('./checkpoints') / config.task
+    if (expected_checkpoint_path).exists():
         print('Load checkpoint.')
-        agent.load(config.logdir / 'variables.pkl')
+        agent.load_from_variables(expected_checkpoint_path)
     state = None
     while step < config.steps:
         print('Start evaluation.')

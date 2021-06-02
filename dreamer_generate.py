@@ -8,7 +8,7 @@ import sys
 import time
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['MUJOCO_GL'] = 'glfw'
+os.environ['MUJOCO_GL'] = 'egl'
 
 import numpy as np
 import tensorflow as tf
@@ -24,6 +24,7 @@ import models
 import tools
 import wrappers
 import dreamer
+import wandb
 
 
 def define_config():
@@ -31,16 +32,17 @@ def define_config():
     # General.
     config.logdir = pathlib.Path('.')
     config.seed = 0
-    config.steps = 5e6
+    config.steps = 1e6
+    config.episodes = 1e4
     config.eval_every = 1e4
     config.log_every = 1e3
     config.log_scalars = True
     config.log_images = True
     config.gpu_growth = True
-    config.precision = 16
+    config.precision = 32
     # Environment.
     config.task = 'dmc_walker_walk'
-    config.envs = 1
+    config.envs = 3
     config.parallel = 'none'
     config.action_repeat = 2
     config.time_limit = 1000
@@ -103,10 +105,14 @@ def main(config):
         config, writer, 'train', datadir, store=True), config.parallel)
                   for _ in range(config.envs)]
     test_envs = [wrappers.Async(lambda: dreamer.make_env(
-        config, writer, 'test', datadir, store=False), config.parallel)
+        config, writer, 'test', datadir, store=True), config.parallel)
                  for _ in range(config.envs)]
     actspace = test_envs[0].action_space
-
+    
+    # Init wandb
+    wandb.init(project='dreamer-simulating', entity='vinnibuh')
+    wandb.config = config
+    
     # Prefill dataset with random episodes.
     step = dreamer.count_steps(datadir, config)
     prefill = max(0, config.prefill - step)
@@ -119,14 +125,16 @@ def main(config):
     step = dreamer.count_steps(datadir, config)
     print(f'Simulating agent for {config.steps - step} steps.')
     agent = dreamer.Dreamer(config, datadir, actspace, writer)
-    expected_checkpoint_path = pathlib.Path('./logdir/simulations') / config.task / 'checkpoint'
+    expected_checkpoint_path = pathlib.Path('./checkpoints') / config.task
     if (expected_checkpoint_path).exists():
-        print('Load checkpoint.')
-        agent.load_from_variables(expected_checkpoint_path)
-    while step < config.steps:
+        print('Load from variables.')
+        agent.load(expected_checkpoint_path / 'variables.pkl')
+    episode = 0
+    while episode < config.episodes:
         tools.simulate(
             functools.partial(agent, training=False), test_envs, episodes=1)
         writer.flush()
+        episode += 1
         print('Start collection.')
     for env in test_envs:
         env.close()

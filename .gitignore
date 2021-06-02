@@ -8,4 +8,5 @@ mjkey.txt
 .idea
 .venv
 logdir
-checkpoint
+checkpoints
+wandb
