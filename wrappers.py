@@ -62,6 +62,57 @@ class DeepMindControl:
         return self._env.physics.render(*self._size, camera_id=self._camera)
 
 
+class Gym:
+    LOCK = threading.Lock()
+
+    def __init__(self, name, size=(64, 64), camera=None):
+        import gym
+        with self.LOCK:
+            self._env = gym.make(name)
+        self._size = size
+        self._camera = camera
+
+    @property
+    def observation_space(self):
+        spaces = {}
+        obs_space = self._env.observation_space
+        spaces['raw'] = gym.spaces.Box(
+            obs_space.low, obs_space.high, dtype=np.float32)
+        spaces['image'] = gym.spaces.Box(
+            0, 255, self._size + (3,), dtype=np.uint8)
+        return gym.spaces.Dict(spaces)
+
+    @property
+    def action_space(self):
+        spec = self._env.action_space
+        return gym.spaces.Box(spec.low, spec.high, dtype=np.float32)
+
+    def close(self):
+        return self._env.close()
+
+    def step(self, action):
+        obs = {}
+        obs['raw'], reward, done, info = self._env.step(action)
+        obs['image'] = self.render()
+        reward = reward or 0
+        return obs, reward, done, info
+
+    def reset(self):
+        obs = {}
+        with self.LOCK:
+            obs['raw'] = self._env.reset()
+        obs['image'] = self.render()
+        return obs
+
+    def render(self, *args, **kwargs):
+        if kwargs.get('mode', 'rgb_array') != 'rgb_array':
+            raise ValueError("Only render mode 'rgb_array' is supported.")
+        return self._env.render('rgb_array', 
+        width=self._size[0], height=self._size[1],
+        camera_id=self._camera)
+
+
+
 class Atari:
     LOCK = threading.Lock()
 

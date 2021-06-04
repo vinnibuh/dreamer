@@ -393,6 +393,10 @@ def make_env(config, writer, prefix, datadir, store):
         env = wrappers.DeepMindControl(task)
         env = wrappers.ActionRepeat(env, config.action_repeat)
         env = wrappers.NormalizeActions(env)
+    elif suite == 'gym':
+        env = wrappers.Gym(task)
+        env = wrappers.ActionRepeat(env, config.action_repeat)
+        env = wrappers.NormalizeActions(env)
     elif suite == 'atari':
         env = wrappers.Atari(
             task, config.action_repeat, (64, 64), grayscale=False,
@@ -437,7 +441,7 @@ def main(config):
 
     # Init wandb
     wandb.init(project='dreamer-training', entity='vinnibuh')
-    wandb.config = config
+    wandb.config.update(config)
 
     # Prefill dataset with random episodes.
     step = count_steps(datadir, config)
