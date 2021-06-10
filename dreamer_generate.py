@@ -33,7 +33,7 @@ def define_config():
     config.logdir = pathlib.Path('.')
     config.seed = 0
     config.steps = 1e6
-    config.episodes = 1e4
+    config.episodes = 300
     config.eval_every = 1e4
     config.log_every = 1e3
     config.log_scalars = True
@@ -126,7 +126,7 @@ def main(config):
     print(f'Simulating agent for {config.steps - step} steps.')
     agent = dreamer.Dreamer(config, datadir, actspace, writer)
     expected_checkpoint_path = pathlib.Path('./checkpoints') / config.task
-    if (expected_checkpoint_path).exists():
+    if expected_checkpoint_path.exists():
         print('Load from variables.')
         agent.load(expected_checkpoint_path / 'variables.pkl')
     episode = 0

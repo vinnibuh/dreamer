@@ -455,10 +455,14 @@ def main(config):
     step = count_steps(datadir, config)
     print(f'Simulating agent for {config.steps - step} steps.')
     agent = Dreamer(config, datadir, actspace, writer)
-    expected_checkpoint_path = pathlib.Path('./checkpoints') / config.task
-    if (expected_checkpoint_path).exists():
-        print('Load checkpoint.')
-        agent.load_from_variables(expected_checkpoint_path)
+    default_checkpoint_path = config.logdir / 'variables.pkl'
+    special_checkpoint_path = pathlib.Path('./checkpoints') / config.task
+    if default_checkpoint_path.exists():
+        print('Load from {}'.format(default_checkpoint_path))
+        agent.load(default_checkpoint_path)
+    elif special_checkpoint_path.exists():
+        print('Load from {}'.format(special_checkpoint_path))
+        agent.load_from_variables(special_checkpoint_path)
     state = None
     while step < config.steps:
         print('Start evaluation.')
