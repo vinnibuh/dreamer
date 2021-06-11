@@ -1,5 +1,5 @@
 outs:
-- md5: 756cec2a35efbb084fd6c955aceadc51.dir
-  size: 701111938
-  nfiles: 285
+- md5: b69d84797e3c88e121de919b8f13215a.dir
+  size: 2096568238
+  nfiles: 1035
   path: logdir
